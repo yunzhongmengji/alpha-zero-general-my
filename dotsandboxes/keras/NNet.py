@@ -59,7 +59,7 @@ class NNetWrapper(NeuralNet):
         """
 
         board = np.copy(board)
-        board = board[np.newaxis, :, :]
+        board = board[np.newaxis, :, :] #将第一维batch维度置1
         normalize_score(board)
 
         pi, v = self.nnet.model.predict(board, verbose=False)

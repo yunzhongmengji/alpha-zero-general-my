@@ -3,9 +3,12 @@ import logging
 import coloredlogs
 
 from Coach import Coach
-from othello.OthelloGame import OthelloGame as Game
-from othello.pytorch.NNet import NNetWrapper as nn
+# from othello.OthelloGame import OthelloGame as Game
+# from othello.pytorch.NNet import NNetWrapper as nn
 from utils import *
+
+from dotsandboxes.DotsAndBoxesGame import DotsAndBoxesGame as Game
+from dotsandboxes.keras.NNet import NNetWrapper as nn
 
 log = logging.getLogger(__name__)
 
