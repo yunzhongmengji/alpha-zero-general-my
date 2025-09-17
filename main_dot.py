@@ -8,19 +8,20 @@ log = logging.getLogger(__name__)
 coloredlogs.install(level='INFO')
 
 args = dotdict({
-    'numIters': 8,                 # 训练轮数（别太小，给模型迭代的机会）
-    'numEps': 16,                  # 每轮自博弈局数（样本量↑）
-    'tempThreshold': 8,            # 前8步温度=1，局面更多样
-    'updateThreshold': 0.58,       # 轻微放宽（从0.60→0.58）
-    'maxlenOfQueue': 10000,        # 样本上限；避免过早截断
-    'numMCTSSims': 40,             # MCTS模拟数；CPU还能承受
-    'arenaCompare': 16,            # 竞技场对局数；评估更稳
-    'cpuct': 1.25,                 # 略加强先验引导，防止搜过窄
+    'numIters': 200,
+    'numEps': 100,
+    'tempThreshold': 8,
+    'updateThreshold': 0.58,
+    'maxlenOfQueue': 10000,
+    'numMCTSSims': 200,
+    'arenaCompare': 40,
+    'cpuct': 1.25,
     'checkpoint': './temp_min/',
     'load_model': False,
     'load_folder_file': ('./temp_min','best.pth.tar'),
-    'numItersForTrainExamplesHistory': 10,  # 经验回放窗口
+    'numItersForTrainExamplesHistory': 20,
 })
+
 
 
 def main():
