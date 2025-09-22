@@ -1,7 +1,8 @@
-# dotsandboxes/pytorch/DotsAndBoxesNNet.py
+# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 
 class ResidualBlock(nn.Module):
     """
@@ -20,6 +21,7 @@ class ResidualBlock(nn.Module):
         out = self.bn2(self.conv2(out))
         out = F.relu(out + x)   # residual add + ReLU
         return out
+
 
 class DotsAndBoxesNNet(nn.Module):
     """
@@ -63,12 +65,18 @@ class DotsAndBoxesNNet(nn.Module):
 
         # policy
         p = F.relu(self.policy_bn(self.policy_conv(x)))
-        p = p.view(p.size(0), -1)
+        # [MOD] GPU/AMP 下可能出现非连续张量，view 会报错；改为安全展平：
+        #      torch.flatten(p, 1) 等价于 p.reshape(p.shape[0], -1)，可自动处理非连续内存
+        p = torch.flatten(p, 1)  # [MOD]
+        # 可选一次性自检（调通后可注释掉）：
+        # assert p.dim() == 2, f"[policy] flatten failed: got shape {tuple(p.shape)}"
         pi_logits = self.policy_fc(p)
 
         # value
         v = F.relu(self.value_bn(self.value_conv(x)))
-        v = v.view(v.size(0), -1)
+        # [MOD] 同理，使用安全展平，避免非连续张量用 view：
+        v = torch.flatten(v, 1)  # [MOD]
+        # assert v.dim() == 2, f"[value] flatten failed: got shape {tuple(v.shape)}"
         v = F.relu(self.value_fc1(v))
         v = torch.tanh(self.value_fc2(v))
         return pi_logits, v
