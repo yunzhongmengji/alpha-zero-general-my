@@ -13,8 +13,8 @@ from .DotsAndBoxesNNet import DotsAndBoxesNNet
 # ---------- 超参（可按需修改） ----------
 args = dotdict({
     'lr': 0.001,
-    'epochs': 5,
-    'batch_size': 128,
+    'epochs': 50,
+    'batch_size': 64,
     'cuda': True,
     'input_channels': 5,
     'num_workers': 2,
@@ -95,6 +95,9 @@ class NNetWrapper(NeuralNet):
         P = np.asarray(target_pis, dtype=np.float32)
         V = np.asarray(target_vs, dtype=np.float32).reshape(-1, 1)
 
+        s = P.sum(axis=1, keepdims=False)
+        print("[DEBUG] pi.sum(): min/mean/max = %.4f / %.4f / %.4f" % (s.min(), s.mean(), s.max()))
+
         # [MOD] Dataset 内的张量全部是 CPU 的
         x_cpu = self._boards_to_tensor_cpu(X)  # CPU tensor
         p_cpu = torch.tensor(P, dtype=torch.float32)  # CPU tensor
@@ -120,28 +123,28 @@ class NNetWrapper(NeuralNet):
 
                 self.optimizer.zero_grad(set_to_none=True)
 
-                if self.use_amp:
-                    with torch.cuda.amp.autocast():
-                        pi_logits, v_out = self.nnet(xb)
-                        log_probs = F.log_softmax(pi_logits, dim=1)
-                        policy_loss = -(pb * log_probs).sum(dim=1).mean()
-                        value_loss = F.mse_loss(v_out, vb)
-                        loss = policy_loss + value_loss
+                # if self.use_amp:
+                #     with torch.cuda.amp.autocast():
+                #         pi_logits, v_out = self.nnet(xb)
+                #         log_probs = F.log_softmax(pi_logits, dim=1)
+                #         policy_loss = -(pb * log_probs).sum(dim=1).mean()
+                #         value_loss = F.mse_loss(v_out, vb)
+                #         loss = policy_loss + value_loss
+                #
+                #     self.scaler.scale(loss).backward()
+                #     torch.nn.utils.clip_grad_norm_(self.nnet.parameters(), 1.0)
+                #     self.scaler.step(self.optimizer)
+                #     self.scaler.update()
+                # else:
+                pi_logits, v_out = self.nnet(xb)
+                log_probs = F.log_softmax(pi_logits, dim=1)
+                policy_loss = -(pb * log_probs).sum(dim=1).mean()
+                value_loss = F.mse_loss(v_out, vb)
+                loss = policy_loss + value_loss
 
-                    self.scaler.scale(loss).backward()
-                    torch.nn.utils.clip_grad_norm_(self.nnet.parameters(), 1.0)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    pi_logits, v_out = self.nnet(xb)
-                    log_probs = F.log_softmax(pi_logits, dim=1)
-                    policy_loss = -(pb * log_probs).sum(dim=1).mean()
-                    value_loss = F.mse_loss(v_out, vb)
-                    loss = policy_loss + value_loss
-
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.nnet.parameters(), 1.0)
-                    self.optimizer.step()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.nnet.parameters(), 1.0)
+                self.optimizer.step()
 
                 epoch_loss += loss.item()
 
