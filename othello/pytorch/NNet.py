@@ -30,8 +30,12 @@ class NNetWrapper(NeuralNet):
         self.board_x, self.board_y = game.getBoardSize()
         self.action_size = game.getActionSize()
 
-        if args.cuda:
+        # 检查并打印当前设备
+        if args.cuda and torch.cuda.is_available():
             self.nnet.cuda()
+            print(f"[INFO] 使用 GPU: {torch.cuda.get_device_name(0)}")
+        else:
+            print("[INFO] 使用 CPU")
 
     def train(self, examples):
         """
@@ -41,6 +45,7 @@ class NNetWrapper(NeuralNet):
 
         for epoch in range(args.epochs):
             print('EPOCH ::: ' + str(epoch + 1))
+            epoch_loss = 0.0    # 记录本epoch的损失和
             self.nnet.train()
             pi_losses = AverageMeter()
             v_losses = AverageMeter()
@@ -74,6 +79,13 @@ class NNetWrapper(NeuralNet):
                 optimizer.zero_grad()
                 total_loss.backward()
                 optimizer.step()
+
+            epoch_loss += total_loss.item() # 累加本批次的标量损失
+
+        print(  # 打印：当前epoch序号/总epoch、累计损失
+            f"[NNet] epoch {epoch + 1}/{args.epochs}, "
+            f"loss={epoch_loss:.4f}, "
+        )
 
     def predict(self, board):
         """
