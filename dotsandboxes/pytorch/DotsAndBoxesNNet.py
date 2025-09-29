@@ -31,7 +31,7 @@ class DotsAndBoxesNNet(nn.Module):
     Policy: (B, action_size)    -- raw logits (softmax在loss/预测时做)
     Value : (B, 1) in [-1, 1]
     """
-    def __init__(self, game, num_filters=128, in_channels=5, num_res_blocks=6):
+    def __init__(self, game, num_filters=128, in_channels=5, num_res_blocks=6, dropout=0.3):
         super().__init__()
         self.board_x, self.board_y = game.getBoardSize()
         self.action_size = game.getActionSize()
@@ -51,12 +51,15 @@ class DotsAndBoxesNNet(nn.Module):
         self.policy_conv = nn.Conv2d(num_filters, 2, kernel_size=1, bias=False)
         self.policy_bn   = nn.BatchNorm2d(2)
         self.policy_fc   = nn.Linear(2 * self.board_x * self.board_y, self.action_size)
+        self.policy_dropout = nn.Dropout(p=dropout)
 
         # value head
         self.value_conv = nn.Conv2d(num_filters, 1, kernel_size=1, bias=False)
         self.value_bn   = nn.BatchNorm2d(1)
         self.value_fc1  = nn.Linear(self.board_x * self.board_y, 256)
+        self.value_dropout = nn.Dropout(p=dropout)
         self.value_fc2  = nn.Linear(256, 1)
+
 
     def forward(self, x):
         # x: (B, C, H, W)
@@ -70,6 +73,7 @@ class DotsAndBoxesNNet(nn.Module):
         p = torch.flatten(p, 1)  # [MOD]
         # 可选一次性自检（调通后可注释掉）：
         # assert p.dim() == 2, f"[policy] flatten failed: got shape {tuple(p.shape)}"
+        p = self.policy_dropout(p)
         pi_logits = self.policy_fc(p)
 
         # value
@@ -78,5 +82,6 @@ class DotsAndBoxesNNet(nn.Module):
         v = torch.flatten(v, 1)  # [MOD]
         # assert v.dim() == 2, f"[value] flatten failed: got shape {tuple(v.shape)}"
         v = F.relu(self.value_fc1(v))
+        v = self.value_dropout(v)
         v = torch.tanh(self.value_fc2(v))
         return pi_logits, v

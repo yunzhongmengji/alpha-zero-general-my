@@ -13,7 +13,7 @@ from .DotsAndBoxesNNet import DotsAndBoxesNNet
 # ---------- 超参（可按需修改） ----------
 args = dotdict({
     'lr': 0.001,
-    'epochs': 50,
+    'epochs': 10,
     'batch_size': 64,
     'cuda': True,
     'input_channels': 5,
@@ -114,43 +114,40 @@ class NNetWrapper(NeuralNet):
         )
 
         for ep in range(args.epochs):
-            epoch_loss = 0.0
+            total_items = 0
+            sum_total, sum_pi, sum_v = 0.0, 0.0, 0.0
+
             for xb_cpu, pb_cpu, vb_cpu in loader:
-                # [MOD] 批量搬到 GPU，non_blocking=True 配合 pin_memory 提速
                 xb = xb_cpu.to(self.device, non_blocking=True)
                 pb = pb_cpu.to(self.device, non_blocking=True)
                 vb = vb_cpu.to(self.device, non_blocking=True)
 
                 self.optimizer.zero_grad(set_to_none=True)
 
-                # if self.use_amp:
-                #     with torch.cuda.amp.autocast():
-                #         pi_logits, v_out = self.nnet(xb)
-                #         log_probs = F.log_softmax(pi_logits, dim=1)
-                #         policy_loss = -(pb * log_probs).sum(dim=1).mean()
-                #         value_loss = F.mse_loss(v_out, vb)
-                #         loss = policy_loss + value_loss
-                #
-                #     self.scaler.scale(loss).backward()
-                #     torch.nn.utils.clip_grad_norm_(self.nnet.parameters(), 1.0)
-                #     self.scaler.step(self.optimizer)
-                #     self.scaler.update()
-                # else:
                 pi_logits, v_out = self.nnet(xb)
                 log_probs = F.log_softmax(pi_logits, dim=1)
-                policy_loss = -(pb * log_probs).sum(dim=1).mean()
-                value_loss = F.mse_loss(v_out, vb)
+                policy_loss = -(pb * log_probs).sum(dim=1).mean()  # batch-mean
+                value_loss = F.mse_loss(v_out, vb)  # batch-mean
                 loss = policy_loss + value_loss
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.nnet.parameters(), 1.0)
                 self.optimizer.step()
 
-                epoch_loss += loss.item()
+                bs = xb.size(0)
+                # 还原为“样本总和”，最后再除以总样本得到“样本平均”
+                sum_pi += policy_loss.item() * bs
+                sum_v += value_loss.item() * bs
+                sum_total += loss.item() * bs
+                total_items += bs
 
             self.scheduler.step()
-            print(f"[NNet] epoch {ep + 1}/{args.epochs}, loss={epoch_loss:.4f}, "
-                  f"lr={self.optimizer.param_groups[0]['lr']:.6f}")
+            epoch_pi = sum_pi / total_items
+            epoch_value = sum_v / total_items
+            epoch_total = sum_total / total_items
+            print(f"[NNet] epoch {ep + 1}/{args.epochs}, "
+                  f"loss={epoch_total:.4f} (pi={epoch_pi:.4f}, v={epoch_value:.4f}), "
+                  f"lr={self.optimizer.param_groups[0]['lr']:.6f}, samples={total_items}")
 
     @torch.no_grad()
     def predict(self, board):

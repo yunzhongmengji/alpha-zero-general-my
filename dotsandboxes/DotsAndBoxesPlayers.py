@@ -200,39 +200,50 @@ class HeuristicDotsAndBoxesPlayer:
         return False
 
 
-# ---------- 纯 UCT / 随机回合 MCTS 玩家 ----------
-class PureMCTSDotsAndBoxesPlayer:
+import math
+import numpy as np
+from collections import defaultdict
+
+class StrongChainMCTSDotsAndBoxesPlayer:
     """
-    只用随机回合进行评估的 MCTS（无神经网络）。
-    参数：
-      - num_sims: 每步的模拟次数
-      - c_puct : UCT 探索常数
+    纯 UCT + 链意识的回合模拟：
+      - 展开：均匀先验；
+      - 选择：UCT (Q/N + c_puct * P * sqrt(Ns)/(1+Nsa))；
+      - 回合：优先吃分；可避免第三边；若全是“三边格”，择使对手连吃最短链的走法；
+      - 终局：以 getGameEnded 返回的胜负值作为回报。
+    说明：
+      - 完全不使用神经网络；
+      - 对 3x3/4x4 已经很有竞争力；通过增大 num_sims 可进一步增强。
     """
-    def __init__(self, game, num_sims=400, c_puct=1.4):
+    def __init__(self, game, num_sims=1200, c_puct=1.5):
         self.game = game
         self.num_sims = num_sims
         self.c_puct = c_puct
-        self.Q = defaultdict(float)   # Q(s,a)
-        self.N = defaultdict(int)     # N(s,a)
-        self.Ns = defaultdict(int)    # N(s)
-        self.Ps = dict()              # 均匀先验/展开后缓存
-        self.terminal = dict()        # 缓存终局
+        self.Q = defaultdict(float)  # Q(s,a)
+        self.N = defaultdict(int)    # N(s,a)
+        self.Ns = defaultdict(int)   # N(s)
+        self.Ps = {}                 # 均匀先验
+        self.terminal = {}           # 终局缓存
 
     def play(self, board):
+        # 若上一步得分，需要按规则“pass”
         if board[2, -1] == 1:
             return self.game.getActionSize() - 1
+
         for _ in range(self.num_sims):
             self._simulate(np.copy(board), 1)
+
         s_key = self._key(board, 1)
         valids = self.game.getValidMoves(board, 1).astype(bool)
         acts = np.nonzero(valids)[0]
-        # 选择访问次数最多的动作
+        # 选访问次数最多的动作
         counts = [self.N[(s_key, a)] for a in acts]
         return int(acts[int(np.argmax(counts))])
 
-    # —— MCTS 核心 —— #
+    # ======== MCTS 主流程 ======== #
     def _simulate(self, board, curPlayer):
         s_key = self._key(board, curPlayer)
+
         # 终局
         if s_key in self.terminal:
             return self.terminal[s_key]
@@ -244,48 +255,166 @@ class PureMCTSDotsAndBoxesPlayer:
         valids = self.game.getValidMoves(board, 1).astype(bool)
         acts = np.nonzero(valids)[0]
 
-        # 未展开：初始化均匀先验，做一次随机 rollout 作为估值
+        # 未展开：初始化均匀先验 + 做一次链意识 rollout
         if s_key not in self.Ps:
-            self.Ps[s_key] = np.ones_like(valids, dtype=np.float32) / max(1, len(acts))
-            v = self._rollout(board, curPlayer)
+            self.Ps[s_key] = self._uniform_prior(valids)
+            v = self._rollout_chain_aware(np.copy(board), curPlayer)
             self.Ns[s_key] += 1
             return v
 
-        # 选择：UCT
-        best, best_u = -1, -1e9
+        # 选择
+        best_a, best_u = -1, -1e18
         sqrt_sum = math.sqrt(self.Ns[s_key] + 1e-8)
         for a in acts:
             q = self.Q[(s_key, a)]
             n = self.N[(s_key, a)]
             u = q + self.c_puct * self.Ps[s_key][a] * sqrt_sum / (1 + n)
             if u > best_u:
-                best_u, best = u, a
+                best_u, best_a = u, a
 
         # 前进
-        next_board, next_player = self.game.getNextState(board, curPlayer, best)
+        next_board, next_player = self.game.getNextState(board, curPlayer, best_a)
         v = self._simulate(next_board, next_player)
 
-        # 回传（注意视角转换：返回的是“对当前玩家”的结果）
-        self.Q[(s_key, best)] = (self.N[(s_key, best)] * self.Q[(s_key, best)] + v) / (self.N[(s_key, best)] + 1)
-        self.N[(s_key, best)] += 1
+        # 回传（注意返回值已经是“对当前玩家”的视角）
+        sa = (s_key, best_a)
+        self.Q[sa] = (self.N[sa] * self.Q[sa] + v) / (self.N[sa] + 1)
+        self.N[sa] += 1
         self.Ns[s_key] += 1
         return v
 
-    def _rollout(self, board, curPlayer):
-        # 随机走到终局，返回胜负（+1 当前玩家胜，-1负）
+    # ======== 回合策略（链意识） ======== #
+    def _rollout_chain_aware(self, board, curPlayer):
+        # 简洁高效：直到终局
         player = curPlayer
         b = np.copy(board)
         while True:
             r = self.game.getGameEnded(b, player)
             if r != 0:
                 return r
+
             valids = self.game.getValidMoves(b, 1).astype(bool)
             acts = np.nonzero(valids)[0]
-            a = int(np.random.choice(acts))
-            b, player = self.game.getNextState(b, player, a)
 
+            # 有直接得分的着法 -> 立即吃分
+            a = self._find_scoring_move(b, acts)
+            if a is not None:
+                b, player = self.game.getNextState(b, player, a)
+                continue
+
+            # 过滤避免第三边的“安全着法”
+            safe = [a for a in acts if not self._creates_third_side(b, a)]
+            if safe:
+                a = np.random.choice(safe)
+                b, player = self.game.getNextState(b, player, a)
+                continue
+
+            # 全部是“三边格”：选让对手连吃最短链的走法（局部最小伤害）
+            best_a, best_penalty = None, +1e9
+            for a in acts:
+                penalty = self._estimate_chain_penalty(b, a)
+                if penalty < best_penalty:
+                    best_penalty, best_a = penalty, a
+            b, player = self.game.getNextState(b, player, best_a)
+
+    # ======== 辅助：策略细节 ======== #
+    def _uniform_prior(self, valids):
+        p = np.zeros_like(valids, dtype=np.float32)
+        idx = np.nonzero(valids)[0]
+        if len(idx) > 0:
+            p[idx] = 1.0 / len(idx)
+        return p
+
+    def _find_scoring_move(self, board, acts):
+        cur = board[0, -1]
+        for a in acts:
+            nb, _ = self.game.getNextState(board, 1, a)
+            if nb[0, -1] > cur:
+                return int(a)
+        return None
+
+    def _creates_third_side(self, board, action):
+        n = self.game.n
+        horiz_cnt = n * (n + 1)
+        is_h = action < horiz_cnt
+        if is_h:
+            x = action // n
+            y = action % n
+            return self._adj_box_has_two(board, True, x, y)
+        else:
+            a2 = action - horiz_cnt
+            x = a2 // (n + 1)
+            y = a2 % (n + 1)
+            return self._adj_box_has_two(board, False, x, y)
+
+    def _adj_box_has_two(self, board, is_h, x, y):
+        n = self.game.n
+        def cnt(i, j):
+            top = board[i, j]
+            bottom = board[i+1, j]
+            left = board[n+1 + i, j]
+            right = board[n+1 + i, j+1]
+            return int(top) + int(bottom) + int(left) + int(right)
+
+        candidates = []
+        if is_h:
+            if x > 0: candidates.append((x-1, y))
+            if x < n: candidates.append((x, y))
+        else:
+            if y > 0: candidates.append((x, y-1))
+            if y < n: candidates.append((x, y))
+
+        for (i, j) in candidates:
+            if 0 <= i < n and 0 <= j < n and cnt(i, j) == 2:
+                return True
+        return False
+
+    def _estimate_chain_penalty(self, board, action):
+        """
+        粗略评估：此步后会形成或延长的“三边格”数量，近似代表对手可能启动的连吃长度。
+        值越大越糟。
+        """
+        n = self.game.n
+        horiz_cnt = n * (n + 1)
+        is_h = action < horiz_cnt
+        if is_h:
+            x = action // n; y = action % n
+            c = 0
+            c += int(self._would_become_third(board, True, x, y, up=True))
+            c += int(self._would_become_third(board, True, x, y, up=False))
+            return c
+        else:
+            a2 = action - horiz_cnt
+            x = a2 // (n + 1); y = a2 % (n + 1)
+            c = 0
+            c += int(self._would_become_third(board, False, x, y, up=True))
+            c += int(self._would_become_third(board, False, x, y, up=False))
+            return c
+
+    def _would_become_third(self, board, is_h, x, y, up=True):
+        n = self.game.n
+        def cnt(i, j):
+            top = board[i, j]
+            bottom = board[i+1, j]
+            left = board[n+1 + i, j]
+            right = board[n+1 + i, j+1]
+            return int(top) + int(bottom) + int(left) + int(right)
+
+        if is_h:
+            if up and x > 0: i, j = x-1, y
+            elif (not up) and x < n: i, j = x, y
+            else: return False
+        else:
+            if up and y > 0: i, j = x, y-1
+            elif (not up) and y < n: i, j = x, y
+            else: return False
+        if 0 <= i < n and 0 <= j < n:
+            return cnt(i, j) == 1  # 1->2（本步后），即“第三边”形成
+        return False
+
+    # ======== 状态 key ======== #
     def _key(self, board, curPlayer):
-        # 用游戏提供的 canonical 视角 + bytes 作为哈希 key
         cano = self.game.getCanonicalForm(board, curPlayer)
         return cano.tobytes()
+
 
